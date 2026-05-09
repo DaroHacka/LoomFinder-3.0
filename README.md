@@ -235,8 +235,14 @@ pip install -r requirements.txt
 playwright install chromium
 
 pip install -e .
+
+### Configuration
+
+```bash
 cp config.example.toml config.toml
 ```
+
+Then edit `config.toml` with your IA credentials (or export cookies manually — see Authentication section). The file `.gitignore` excludes `config.toml` so your credentials can never be accidentally committed. The `config.example.toml` serves as a template for new users.
 
 ---
 

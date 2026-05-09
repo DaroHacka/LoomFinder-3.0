@@ -1,0 +1,33 @@
+[internet_archive]
+# Required for --borrow mode. Options for providing credentials:
+#
+# 1) Email/password (recommended):
+email = "your.email@example.com"
+password = "your_password"
+#
+# 2) Or S3 keys directly (copied from ~/.config/ia.ini):
+# s3_access = "your_s3_access_key"
+# s3_secret = "your_s3_secret_key"
+#
+# 3) Or just run `ia configure` once and leave these blank —
+#    the tool will read ~/.config/ia.ini automatically.
+
+[loomfinder]
+# Default search language filter
+language = "eng"
+# Maximum retry attempts to find a suitable book
+max_retries = 8
+# Maximum concurrent requests to Internet Archive
+rate_limit = 3
+# Default number of words per snippet
+default_num_words = 300
+# Minimum screenshot size (KB) to consider a page as real text content
+min_page_size_kb = 350
+# Minimum quality ratio for a segment to be printed (0.0-1.0)
+min_word_quality = 0.5
+# Seconds to wait for "save author?" prompt before exiting (0 = no timeout)
+save_author_timeout = 10
+# Return the book after capturing a snippet (true) or keep it borrowed (false)
+return_book = true
+# Maximum borrows per run before falling through to txt downloads
+max_borrows = 5
