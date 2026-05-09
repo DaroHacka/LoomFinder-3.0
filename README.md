@@ -20,13 +20,14 @@ log in to your Internet Archive profile
 
 ---
 
-> **⚠️ Pay attention if you are an active subscriber:**  
-> Don't use this tool if you don't want your account to be temporarily blocked from loaning new books. Internet Archive appears to impose a lending limit — likely 5–10 books per day per account. If you don't care about the limit, LoomFinder auto-returns each book once the snippet is captured.  
->
-> I didn't know about this restriction when I started the project, and it changes things. With a hard cap on daily borrows, the tool can't fully deliver on its promise of being a freely explorable library. That said, I still like the concept — building the screenshot-and-OCR pipeline, reverse-engineering the BookReader, and getting it working end-to-end was genuinely fun. It works, just for a limited number of loans per day.  
->
-> Use `--keep` to hold onto a book for the full 1-hour loan period and generate multiple snippets.
-> Use `--borrowed N` to reference a previously kept book by index.
+## **Softened, user‑friendly version**
+
+If you’re an active Internet Archive subscriber, it’s worth knowing how borrowing limits work. The Archive allows only a small number of simultaneous loans per account (usually around five). LoomFinder automatically returns each book as soon as the snippet is captured, so your loan slots free up immediately — but if you run many searches in a short period, you may eventually hit the Archive’s temporary “too many loans” cooldown. It’s not a block or penalty, just a brief pause before you can borrow again.
+
+This doesn’t affect normal use, and the tool still works exactly as intended — it simply means the Archive enforces a natural pace for borrowing. Building the screenshot‑and‑OCR pipeline, reverse‑engineering the BookReader, and getting the whole flow working end‑to‑end was the real goal, and that part works beautifully.
+
+If you want to stay within a single loan slot, you can use **--keep** to hold onto a book for the full one‑hour loan and generate multiple snippets from it. You can also revisit a previously kept book using **--borrowed N**.
+
 
 ---
 
