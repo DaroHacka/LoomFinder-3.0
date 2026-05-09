@@ -99,6 +99,7 @@ async def input_with_timeout(prompt, timeout=10):
     try:
         return await asyncio.wait_for(future, timeout=timeout)
     except asyncio.TimeoutError:
+        future.cancel()
         raise TimeoutExpired
 
 
