@@ -1,4 +1,4 @@
-# **LoomFinder 3.0 — Borrow the Internet Archive**
+# **LoomFinder 3.0 — *Discover random snippets from books on the Internet Archive***
 
 Discover random snippets from books on the Internet Archive directly in your terminal — including modern, in‑copyright books — by borrowing them through your own Internet Archive account exactly as a normal user would. LoomFinder 3.0 doesn't bypass restrictions or access anything you aren't entitled to; it simply automates the same borrow‑and‑read workflow you already perform manually, making exploration faster, smoother, and more fun.
 
@@ -17,6 +17,14 @@ log in to your Internet Archive profile
 → send the images to OCR
 → print a clean text snippet directly in your terminal
 ```
+
+---
+
+> **⚠️ Pay attention if you are an active subscriber:**  
+> Don't use this tool if you don't want your account to be temporarily blocked from loaning new books. Internet Archive appears to impose a lending limit — likely 5–10 books per day per account. If you don't care about the limit, LoomFinder auto-returns each book once the snippet is captured.  
+>
+> I didn't know about this restriction when I started the project, and it changes things. With a hard cap on daily borrows, the tool can't fully deliver on its promise of being a freely explorable library. That said, I still like the concept — building the screenshot-and-OCR pipeline, reverse-engineering the BookReader, and getting it working end-to-end was genuinely fun. It works, just for a limited number of loans per day.  
+>
 
 ## Technical Details of the Screenshot Capture
 
@@ -207,6 +215,8 @@ With `--borrow`, it only uses the Playwright path.
 | Option | Description |
 |--------|-------------|
 | `--borrow` | Borrow-only mode |
+| `--keep` | Keep book borrowed after extraction (don't return) |
+| `--borrowed N` | Extract from N-th kept book (1-10) |
 | `--save` | Save snippet to file |
 | `--tier-*` | Force a specific extraction tier |
 | `--lang` | Language filter |
