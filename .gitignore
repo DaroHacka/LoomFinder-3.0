@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+config.toml
+Authors_list.txt
+loomfinder_samples.txt
+*.bak
