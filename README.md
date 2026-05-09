@@ -25,6 +25,67 @@ log in to your Internet Archive profile
 >
 > I didn't know about this restriction when I started the project, and it changes things. With a hard cap on daily borrows, the tool can't fully deliver on its promise of being a freely explorable library. That said, I still like the concept — building the screenshot-and-OCR pipeline, reverse-engineering the BookReader, and getting it working end-to-end was genuinely fun. It works, just for a limited number of loans per day.  
 >
+> Use `--keep` to hold onto a book for the full 1-hour loan period and generate multiple snippets.
+> Use `--borrowed N` to reference a previously kept book by index.
+
+---
+
+## Two Modes of Operation
+
+LoomFinder has two independent extraction paths:
+
+| Mode | Flag | Source | Content type |
+|------|------|--------|-------------|
+| **Open-access** (default) | *(no flag)* | `.txt` download | Public-domain / free texts |
+| **Borrow** | `--borrow` | Playwright screenshot + OCR | Any borrowable book |
+
+Without `--borrow`, LoomFinder **only searches open-access books** — borrow-only books are automatically excluded from search results. This preserves your IA lending quota for when you really need it.
+
+With `--borrow`, you opt into the lending system explicitly.
+
+---
+
+## Improvements to the Open-Access (2.0) Path
+
+The core functionality — searching and extracting snippets from open-access books — has been significantly upgraded in 3.0:
+
+### Smarter Snippet Selection
+Instead of picking one random text chunk and hoping for the best, LoomFinder now **samples 15 random regions** across the entire text, scores each one for quality (ratio of real words to OCR noise/symbols), and returns the **best one** that passes the quality threshold. This means cleaner, more readable snippets every time — truck manuals and table-heavy texts are reliably filtered out.
+
+### More Accurate Author Matching
+Author names with middle initials (`Howard R. Garis`, `T. S. Eliot`) now match correctly, while still rejecting false positives (`Stephen King` vs `Stephen F. King`). The tokenizer normalizes periods consistently on both the search term and the book metadata.
+
+### Faster Failure on Locked Books
+If a book's `.txt` file requires authentication (401/403), LoomFinder breaks immediately instead of retrying 3 times with backoff. Combined with the search filter that excludes borrow-only books by default, this means no more wasted time on inaccessible texts.
+
+### Borrow-Only Books Filtered from Search
+Without `--borrow`, the search query automatically excludes collections `printdisabled`, `lendinglibrary`, and `inlibrary` — the collections where IA stores borrow-only books. Only genuine open-access books appear in results.
+
+### Authenticated Downloads
+When you're logged into your IA account (via cookies), those session cookies are passed to the txt downloader. Some restricted `.txt` files become accessible.
+
+## Borrow Path Upgrades
+
+### Lending Limit Detection
+If IA rejects the borrow (daily limit exceeded, account blocked), LoomFinder detects the error message on the page and reports "borrowing limit reached" instead of silently extracting preview-mode garbage.
+
+### 12-Hour Cooldown
+When the lending limit is hit, a timestamp is saved. LoomFinder won't attempt to borrow again for 12 hours — it falls back to open-access downloads during that period.
+
+### Keep Books Borrowed (`--keep`)
+Instead of returning the book immediately after extracting one snippet, `--keep` holds onto it for the full 1-hour loan period. The book is tracked in `~/.loomfinder/kept_books.json` so you can generate more snippets.
+
+### Extract from Kept Books (`--borrowed N`)
+Once a book is kept, reference it by index:
+```bash
+loomfinder --borrowed 1
+```
+This opens the already-borrowed book directly (no borrow click needed), captures a new random page, and returns another snippet. You can do this unlimited times during the 1-hour loan window.
+
+### Configurable Borrow Limit
+Set `max_borrows` in `config.toml` (default: 5) to cap borrow attempts per run and avoid hitting IA's daily limit.
+
+---
 
 ## Technical Details of the Screenshot Capture
 
@@ -193,8 +254,9 @@ loomfinder s:neuroscience d:2010-2024 --borrow
 loomfinder --borrow a:"Stephen King"
 ```
 
-Without `--borrow`, LoomFinder tries borrowing first, then falls back to open‑access `.txt` downloads.
-With `--borrow`, it only uses the Playwright path.
+Without `--borrow`, LoomFinder **only searches open-access books** (borrow-only books are excluded from search results) and downloads `.txt` files directly via aiohttp.
+
+With `--borrow`, it uses the Playwright screenshot + OCR path to capture pages from borrowable books. Use this only when you're willing to consume one of your daily IA lending slots.
 
 ---
 
@@ -214,12 +276,20 @@ With `--borrow`, it only uses the Playwright path.
 
 | Option | Description |
 |--------|-------------|
-| `--borrow` | Borrow-only mode |
+| `--borrow` | Borrow-only mode: skip txt download fallback |
 | `--keep` | Keep book borrowed after extraction (don't return) |
 | `--borrowed N` | Extract from N-th kept book (1-10) |
-| `--save` | Save snippet to file |
-| `--tier-*` | Force a specific extraction tier |
-| `--lang` | Language filter |
+| `--save` | Save snippet to `loomfinder_samples.txt` |
+| `--list-genres` | List available genres |
+| `--list-subjects` | List available subjects |
+| `--list-journals` | List available journals and magazines |
+| `--config PATH` | Path to custom config file |
+| `--lang CODE` | Language filter (ISO 639-2/B, e.g. `eng`, `fre`, `ger`) |
+| `--tier-g` | Force Tier G (IIIF manifest) |
+| `--tier-f` | Force Tier F (direct page JPEGs) |
+| `--tier-c` | Force Tier C (BookReaderPreview direct fetch) |
+| `--tier-e` | Force Tier E (Playwright canvas extraction) |
+| `--tier-d` | Force Tier D (Playwright screenshot) |
 
 ---
 
@@ -231,22 +301,33 @@ loomfinder g:fiction d:1990-2000
 loomfinder s:neuroscience d:2010-2024 --borrow
 loomfinder prose
 loomfinder a:"Cormac McCarthy" --save
+loomfinder a:"Howard R. Garis"       # open-access, txt download
+loomfinder a:"Stephen King" --borrow --keep   # borrow + keep for 1 hour
+loomfinder --borrowed 1                       # another snippet from kept book
 ```
 
 ---
 
-## How It Works (Narrative Version)
+## How It Works
 
-1. **Search** — LoomFinder builds an Archive query and finds borrowable books.
-2. **Borrow** — Playwright opens the book page and clicks "Borrow".
-3. **Render** — The BookReader loads in theater mode.
-4. **Navigate** — LoomFinder jumps to interior pages using keyboard events.
-5. **Capture** — It screenshots the `<img.BRpageimage>` element at 2× resolution.
-6. **OCR** — Tesseract converts the screenshot into text.
-7. **Extract** — A coherent snippet is selected.
-8. **Return** — The book is returned to the Archive.
+LoomFinder has two independent extraction pipelines:
 
-It's the same flow a human follows — automated, fast, and reliable.
+**Open-access path** (default, no `--borrow`):
+1. **Search** — Builds an Archive query that excludes borrow-only books (`NOT collection:printdisabled AND NOT collection:lendinglibrary`)
+2. **Fetch** — Gets book metadata and finds the `.txt` download URL
+3. **Download** — Downloads the plain text file (with your IA session cookies for auth)
+4. **Score + Extract** — Samples 15 random regions, scores each for quality, picks the best one
+5. **Display** — Prints the snippet with title, author, year, and URL
+
+**Borrow path** (`--borrow`):
+1. **Search** — Builds an Archive query that includes all books (no collection filters)
+2. **Borrow** — Playwright opens the book page and clicks "Borrow"
+3. **Render** — The BookReader loads in theater mode
+4. **Navigate** — Jumps to interior pages using keyboard events
+5. **Capture** — Screenshots the `<img.BRpageimage>` element at 2× resolution
+6. **OCR** — Tesseract converts the screenshot into text
+7. **Extract** — A coherent snippet is selected from the OCR output
+8. **Return or Keep** — Returns the book automatically, or keeps it if `--keep` is set
 
 ---
 

@@ -1,8 +1,10 @@
 import json
+from datetime import datetime, timedelta
 import sys
 from pathlib import Path
 
 COOKIE_PATH = Path.home() / ".loomfinder" / "cookies.json"
+KEPT_PATH = Path.home() / ".loomfinder" / "kept_books.json"
 
 
 def debug(msg):
@@ -49,31 +51,73 @@ async def login(email: str, password: str) -> dict:
         return cookie_dict
 
 
-def _normalise_cookies(data):
-    if isinstance(data, list):
-        return {c["name"]: c["value"] for c in data if "name" in c and "value" in c}
-    if isinstance(data, dict):
-        return data
-    return {}
-
-
 async def load_or_login(config) -> dict:
     email = config.get("internet_archive", {}).get("email")
     password = config.get("internet_archive", {}).get("password")
 
-    # Check saved cookies first — works regardless of config credentials
+    if not email or not password:
+        debug("no credentials in config")
+        return {}
+
     if COOKIE_PATH.exists():
         try:
-            raw = json.loads(COOKIE_PATH.read_text())
-            cookies = _normalise_cookies(raw)
+            cookies = json.loads(COOKIE_PATH.read_text())
             if "logged-in-sig" in cookies and "logged-in-user" in cookies:
                 debug(f"loaded {len(cookies)} saved cookies")
                 return cookies
         except Exception as e:
             debug(f"error loading cookies: {e}")
 
-    if not email or not password:
-        debug("no credentials in config and no valid cookies")
-        return {}
-
     return await login(email, password)
+
+
+def get_kept_books():
+    if not KEPT_PATH.exists():
+        return []
+    try:
+        data = json.loads(KEPT_PATH.read_text())
+        now = datetime.now()
+        return [b for b in data if datetime.fromisoformat(b["expires_at"]) > now]
+    except Exception:
+        return []
+
+
+def track_kept_book(identifier, title):
+    books = get_kept_books()
+    books.append({
+        "identifier": identifier,
+        "title": title,
+        "borrowed_at": datetime.now().isoformat(),
+        "expires_at": (datetime.now() + timedelta(hours=1)).isoformat(),
+    })
+    KEPT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    KEPT_PATH.write_text(json.dumps(books, indent=2))
+
+
+def remove_kept_book(identifier):
+    books = get_kept_books()
+    books = [b for b in books if b["identifier"] != identifier]
+    KEPT_PATH.write_text(json.dumps(books, indent=2))
+
+
+LENDING_LIMIT_PATH = Path.home() / ".loomfinder" / "lending_limit.txt"
+
+
+def is_lending_blocked():
+    if not LENDING_LIMIT_PATH.exists():
+        return False
+    try:
+        blocked_at = datetime.fromisoformat(LENDING_LIMIT_PATH.read_text().strip())
+        return datetime.now() - blocked_at < timedelta(hours=12)
+    except Exception:
+        return False
+
+
+def mark_lending_limit():
+    LENDING_LIMIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    LENDING_LIMIT_PATH.write_text(datetime.now().isoformat())
+
+
+def clear_lending_limit():
+    if LENDING_LIMIT_PATH.exists():
+        LENDING_LIMIT_PATH.unlink()

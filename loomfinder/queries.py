@@ -12,9 +12,12 @@ ROWS_PER_PAGE = 1000
 
 
 def build_query_string(title=None, genre=None, anything=None, author=None,
-                       subject=None, start_date=None, end_date=None,
-                        language="eng", page=1):
+                        subject=None, start_date=None, end_date=None,
+                         language="eng", page=1, borrow_only=False):
     query = [f"mediatype:texts", f"language:({language})"]
+
+    if not borrow_only:
+        query.append("NOT collection:printdisabled AND NOT collection:lendinglibrary AND NOT collection:inlibrary")
 
     if not any([title, genre, anything, author, subject, start_date, end_date]):
         subject = get_weighted_random_choice()
@@ -37,7 +40,7 @@ def build_query_string(title=None, genre=None, anything=None, author=None,
     encoded_qs = quote(query_string, safe="():[]")
     return (
         f"https://archive.org/advancedsearch.php"
-        f"?q={encoded_qs}&fl[]=identifier&fl[]=title&fl[]=creator"
+        f"?q={encoded_qs}&fl[]=identifier&fl[]=title&fl[]=creator&fl[]=date"
         f"&rows={ROWS_PER_PAGE}&page={page}&output=json"
     )
 

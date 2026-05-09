@@ -23,24 +23,29 @@ def segment_quality(text):
     return sum(1 for w in words if _is_real_word(w)) / len(words)
 
 
-def extract_segment(text, num_words=200):
+def extract_segment(text, num_words=200, min_quality=MIN_WORD_QUALITY, num_candidates=15):
     words = re.findall(r"\S+", text)
     if len(words) < num_words:
         return None
 
-    start = random.randint(0, len(words) - num_words)
-    segment = words[start:start + num_words]
+    candidates = []
+    for _ in range(num_candidates):
+        start = random.randint(0, len(words) - num_words)
+        segment = words[start:start + num_words]
 
-    end = start + num_words
-    while end < len(words) and not words[end].endswith("."):
-        segment.append(words[end])
-        end += 1
+        end = start + num_words
+        while end < len(words) and not words[end].endswith("."):
+            segment.append(words[end])
+            end += 1
 
-    candidate = " ".join(segment)
-    if segment_quality(candidate) < MIN_WORD_QUALITY:
-        return None
+        candidate = " ".join(segment)
+        quality = segment_quality(candidate)
+        candidates.append((quality, candidate))
 
-    return candidate
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    best_quality, best_candidate = candidates[0]
+
+    return best_candidate if best_quality >= min_quality else None
 
 
 def get_weighted_random_choice():

@@ -11,8 +11,9 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
-from .borrow import borrow_and_extract
+from .borrow import borrow_and_extract, extract_from_borrowed
 from .categories import literature_genres, other_subjects, old_journals_and_magazines
+from .login import get_kept_books, is_lending_blocked, mark_lending_limit, load_or_login
 from .parsing import parse_parameters
 from .queries import build_query_string, fetch_books, fetch_metadata
 from .random_selection import extract_segment
@@ -49,6 +50,14 @@ def parse_args():
         help="Borrow-only mode: skip txt download fallback",
     )
     parser.add_argument(
+        "--keep", action="store_true",
+        help="Keep book borrowed after extraction (don't return)",
+    )
+    parser.add_argument(
+        "--borrowed", type=int, choices=range(1, 11), metavar="N",
+        help="Extract from N-th kept book (1-10)",
+    )
+    parser.add_argument(
         "--list-genres", action="store_true",
         help="List available genres",
     )
@@ -65,8 +74,8 @@ def parse_args():
         help="Path to config file",
     )
     parser.add_argument(
-        "--lang", type=str, default="eng",
-        help="Language filter (default: english)",
+        "--lang", type=str, default=None,
+        help="Language filter (ISO 639-2/B code, e.g. eng, fre, ger)",
     )
     parser.add_argument(
         "--tier-g", action="store_true",
@@ -105,7 +114,7 @@ def author_match_score(book, search_author):
     if not search_author:
         return True, 0
 
-    search_tokens = set(search_author.lower().split())
+    search_tokens = set(re.findall(r"\w+", search_author.lower()))
     creator = book.get("creator", "Unknown Author")
 
     if isinstance(creator, list):
@@ -134,7 +143,7 @@ def debug(msg):
     print(f"[debug main] {msg}", file=sys.stderr)
 
 
-async def extract_text(session, identifier, config, semaphore, borrow_only=False, tiers=None):
+async def extract_text(session, identifier, config, semaphore, borrow_only=False, tiers=None, keep=False, borrow_state=None):
     metadata = await fetch_metadata(session, identifier, semaphore)
     if not metadata:
         debug(f"{identifier}: no metadata")
@@ -142,11 +151,37 @@ async def extract_text(session, identifier, config, semaphore, borrow_only=False
 
     files = metadata.get("files", [])
 
-    debug(f"{identifier}: trying borrow_and_extract...")
-    segment = await borrow_and_extract(identifier, metadata, config, tiers=tiers)
-    if segment:
-        debug(f"{identifier}: borrow_and_extract succeeded")
-        return segment
+    borrow_ok = True
+    if not borrow_only:
+        debug(f"{identifier}: --borrow not set, skipping borrow")
+        borrow_ok = False
+    elif borrow_state and borrow_state["limit_hit"]:
+        debug(f"{identifier}: lending limit was hit earlier, skipping borrow")
+        borrow_ok = False
+    elif borrow_state and borrow_state["count"] >= borrow_state["max"]:
+        debug(f"{identifier}: max_borrows ({borrow_state['max']}) reached, skipping borrow")
+        borrow_ok = False
+    elif is_lending_blocked():
+        debug(f"{identifier}: lending is in 12h cooldown, skipping borrow")
+        borrow_ok = False
+
+    if borrow_ok:
+        debug(f"{identifier}: trying borrow_and_extract...")
+        segment = await borrow_and_extract(identifier, metadata, config, tiers=tiers, keep=keep)
+
+        if segment == "__LENDING_LIMIT__":
+            debug(f"{identifier}: borrowing limit reached")
+            mark_lending_limit()
+            if borrow_state:
+                borrow_state["limit_hit"] = True
+            if borrow_only:
+                return None
+            borrow_ok = False
+        elif segment:
+            debug(f"{identifier}: borrow_and_extract succeeded")
+            if borrow_state:
+                borrow_state["count"] += 1
+            return segment
 
     if borrow_only:
         debug(f"{identifier}: borrow failed and --borrow is set, skipping")
@@ -175,6 +210,8 @@ async def extract_text(session, identifier, config, semaphore, borrow_only=False
                         debug(f"{identifier}: txt downloaded but failed quality check")
                     else:
                         debug(f"{identifier}: txt download HTTP {resp.status}")
+                        if resp.status in (401, 403):
+                            break
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             debug(f"{identifier}: txt download error: {e}")
         if attempt < 2:
@@ -184,9 +221,66 @@ async def extract_text(session, identifier, config, semaphore, borrow_only=False
     return None
 
 
+async def _display_result(book_title, book_author, segment, url, args, book, book_date=""):
+    title_styled = Text(book_title, style="bold cyan")
+    author_line = f"by {book_author}" + (f" ({book_date})" if book_date else "")
+    author_styled = Text(author_line, style="italic yellow")
+    snippet_styled = Text(segment, style="white")
+
+    panel = Panel(
+        f"{title_styled}\n{author_styled}\n\n"
+        f"{snippet_styled}\n\n"
+        f"[dim]{url}[/dim]",
+        title="[bold green]LoomFinder[/bold green]",
+        border_style="green",
+    )
+    console.print(panel)
+
+    if args.save:
+        output = (
+            f"Book Title: {book_title}\n"
+            f"Author: {book_author}" + (f" ({book_date})" if book_date else "") + "\n"
+            f"URL: {url}\n\n{segment}"
+        )
+        save_to_file(output)
+        console.print("[green]Output saved to loomfinder_samples.txt[/green]")
+
+
 async def main():
     args = parse_args()
     config = load_config(args.config)
+
+    if args.lang is None:
+        args.lang = config.get("loomfinder", {}).get("language", "eng")
+
+    # Handle --borrowed N
+    if args.borrowed is not None:
+        kept = get_kept_books()
+        if args.borrowed > len(kept):
+            console.print(
+                f"[red]No kept book #{args.borrowed}. "
+                f"You have {len(kept)} kept book(s).[/red]"
+            )
+            return
+        book = kept[args.borrowed - 1]
+        identifier = book["identifier"]
+        async with aiohttp.ClientSession() as session:
+            metadata = await fetch_metadata(session, identifier, asyncio.Semaphore(1))
+            if not metadata:
+                console.print(f"[red]No metadata for kept book: {identifier}[/red]")
+                return
+            segment = await extract_from_borrowed(identifier, metadata, config)
+            if segment:
+                m = metadata.get("metadata", {})
+                book_date = (m.get("date") or "")[:4] if m.get("date") else ""
+                await _display_result(
+                    book.get("title", identifier), "Unknown Author",
+                    segment, f"https://archive.org/details/{identifier}",
+                    args, None, book_date=book_date,
+                )
+            else:
+                console.print("[red]Failed to extract from kept book.[/red]")
+        return
 
     prose_mode = False
     if "prose" in args.params:
@@ -254,11 +348,17 @@ async def main():
     rate_limit = config.get("loomfinder", {}).get("rate_limit", 3)
     semaphore = asyncio.Semaphore(rate_limit)
 
+    return_book = config.get("loomfinder", {}).get("return_book", True)
+    keep = args.keep or not return_book
+    max_borrows = config.get("loomfinder", {}).get("max_borrows", 5)
+    borrow_state = {"count": 0, "max": max_borrows, "limit_hit": False}
+
     # Track total pages per level to avoid requesting empty pages
     total_pages_per_level = {}
 
+    cookies = await load_or_login(config)
     connector = aiohttp.TCPConnector(limit=rate_limit + 2)
-    async with aiohttp.ClientSession(connector=connector) as session:
+    async with aiohttp.ClientSession(connector=connector, cookies=cookies) as session:
         for attempt in range(max_retries):
             level = min(attempt // 2, len(query_plan) - 1)
             t, g, x, a, s, sd, ed = query_plan[level]
@@ -293,7 +393,7 @@ async def main():
             query_url = build_query_string(
                 title=t, genre=g, anything=x, author=a, subject=s,
                 start_date=sd, end_date=ed,
-                language=args.lang, page=page,
+                language=args.lang, page=page, borrow_only=args.borrow,
             )
 
             books, num_found = await fetch_books(session, query_url, semaphore)
@@ -324,37 +424,13 @@ async def main():
 
                 segment = await extract_text(
                     session, identifier, config, semaphore, args.borrow,
-                    tiers=tier_order,
+                    tiers=tier_order, keep=keep, borrow_state=borrow_state,
                 )
 
                 if segment:
-                    title_styled = Text(book_title, style="bold cyan")
-                    author_styled = Text(
-                        f"by {book_author}", style="italic yellow"
-                    )
-                    snippet_styled = Text(segment, style="white")
                     url = f"https://archive.org/details/{identifier}"
-
-                    panel = Panel(
-                        f"{title_styled}\n{author_styled}\n\n"
-                        f"{snippet_styled}\n\n"
-                        f"[dim]{url}[/dim]",
-                        title="[bold green]LoomFinder[/bold green]",
-                        border_style="green",
-                    )
-                    console.print(panel)
-
-                    if args.save:
-                        output = (
-                            f"Book Title: {book_title}\n"
-                            f"Author: {book_author}\n"
-                            f"URL: {url}\n\n{segment}"
-                        )
-                        save_to_file(output)
-                        console.print(
-                            "[green]Output saved to "
-                            "loomfinder_samples.txt[/green]"
-                        )
+                    book_date = book.get("date", "")[:4] if book.get("date") else ""
+                    await _display_result(book_title, book_author, segment, url, args, book, book_date=book_date)
 
                     if (
                         not prose_mode
