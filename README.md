@@ -1,6 +1,6 @@
 # **LoomFinder 3.0 — Borrow the Internet Archive**
 
-Discover random snippets from books on the Internet Archive — including modern, in‑copyright books — by borrowing them through your own Internet Archive account exactly as a normal user would. LoomFinder 3.0 doesn't bypass restrictions or access anything you aren't entitled to; it simply automates the same borrow‑and‑read workflow you already perform manually, making exploration faster, smoother, and more fun.
+Discover random snippets from books on the Internet Archive directly in your terminal — including modern, in‑copyright books — by borrowing them through your own Internet Archive account exactly as a normal user would. LoomFinder 3.0 doesn't bypass restrictions or access anything you aren't entitled to; it simply automates the same borrow‑and‑read workflow you already perform manually, making exploration faster, smoother, and more fun.
 
 LoomFinder 2.0 was a fun experiment: it scraped open‑access texts, mostly classics. But the moment you searched for Stephen King, Cormac McCarthy, or any modern author, you hit a wall. The Archive would show the book, but the text was locked behind its borrowing system.
 
