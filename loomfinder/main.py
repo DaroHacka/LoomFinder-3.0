@@ -350,6 +350,7 @@ async def main():
 
     return_book = config.get("loomfinder", {}).get("return_book", True)
     keep = args.keep or not return_book
+    borrow_only = args.borrow or args.keep
     max_borrows = config.get("loomfinder", {}).get("max_borrows", 5)
     borrow_state = {"count": 0, "max": max_borrows, "limit_hit": False}
 
@@ -393,7 +394,7 @@ async def main():
             query_url = build_query_string(
                 title=t, genre=g, anything=x, author=a, subject=s,
                 start_date=sd, end_date=ed,
-                language=args.lang, page=page, borrow_only=args.borrow,
+                language=args.lang, page=page, borrow_only=borrow_only,
             )
 
             books, num_found = await fetch_books(session, query_url, semaphore)
@@ -423,7 +424,7 @@ async def main():
                     continue
 
                 segment = await extract_text(
-                    session, identifier, config, semaphore, args.borrow,
+                    session, identifier, config, semaphore, borrow_only,
                     tiers=tier_order, keep=keep, borrow_state=borrow_state,
                 )
 
