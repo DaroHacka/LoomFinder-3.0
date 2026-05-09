@@ -125,34 +125,96 @@ async def borrow_and_extract(identifier, metadata, config, tiers=None):
 
         await page.wait_for_timeout(5000)
 
-        # Step 3 — jump to randomized interior pages and capture
+        # Step 3 — hybrid capture: jumpToPage + ArrowRight + selector fallbacks
         image_data = []
         target_count = min(len(pages), 5)
+        current_page = 0
+
+        # Advance past front matter
+        debug(f"{identifier}: advancing 25 pages past front matter")
+        for _ in range(25):
+            await page.keyboard.press("ArrowRight")
+            await page.wait_for_timeout(200)
+        current_page = 25
+        await page.wait_for_timeout(1000)
+
+        # Check if BookReader JS API is available
+        has_api = await page.evaluate("typeof br !== 'undefined' && br !== null")
+        debug(f"{identifier}: BookReader API available: {has_api}")
+
+        CAPTURE_SELECTORS = [
+            "img.BRpageimage",
+            "img.br-page-image",
+            "canvas.BRpage",
+            "div.BRpageimage img",
+            "#BookReader img",
+        ]
+
+        async def try_capture():
+            for sel in CAPTURE_SELECTORS:
+                els = await page.query_selector_all(sel)
+                for el in els:
+                    try:
+                        src = ""
+                        if sel.startswith("img") or "img" in sel:
+                            src = await el.get_attribute("src") or ""
+                            if src and not src.startswith("blob:"):
+                                continue
+                        box = await el.bounding_box()
+                        if not box or box["width"] < 120 or box["height"] < 120:
+                            continue
+                        data = await el.screenshot()
+                        if len(data) > 500:
+                            return data, sel
+                    except Exception:
+                        continue
+            return None, None
 
         for target in pages:
             if len(image_data) >= target_count:
                 break
-            try:
-                await page.evaluate(f"br && br.jumpToPage({target})")
-                await page.wait_for_timeout(3000)
-            except Exception:
-                continue
 
-            imgs = await page.query_selector_all("img.BRpageimage")
-            for el in imgs:
+            # Try jumpToPage first
+            jumped = False
+            if has_api:
                 try:
-                    src = await el.get_attribute("src") or ""
-                    if not src.startswith("blob:"):
-                        continue
-                    box = await el.bounding_box()
-                    if not box or box["width"] < 100 or box["height"] < 100:
-                        continue
-                    data = await el.screenshot()
-                    if len(data) > 500:
-                        image_data.append(data)
-                        debug(f"{identifier}: captured page {target} ({len(data)} bytes)")
+                    await page.evaluate(f"br && br.jumpToPage({target})")
+                    await page.wait_for_timeout(3000)
+                    current_page = target
+                    jumped = True
                 except Exception:
                     pass
+
+            # Fallback: ArrowRight step
+            if not jumped:
+                steps = target - current_page
+                if steps > 0:
+                    for _ in range(min(steps, 50)):
+                        await page.keyboard.press("ArrowRight")
+                        await page.wait_for_timeout(150)
+                    await page.wait_for_timeout(2000)
+                    current_page = target
+
+            # Try priority element selectors
+            data, used_sel = await try_capture()
+            if data:
+                image_data.append(data)
+                debug(f"{identifier}: page {target} via {used_sel} ({len(data)} bytes)")
+                continue
+
+            # Ultimate fallback: capture the entire BookReader container
+            try:
+                br = await page.query_selector("#BookReader")
+                if br:
+                    data = await br.screenshot()
+                    if len(data) > 500:
+                        image_data.append(data)
+                        debug(f"{identifier}: page {target} via #BookReader fallback ({len(data)} bytes)")
+                        continue
+            except Exception:
+                pass
+
+            debug(f"{identifier}: page {target}: all capture methods failed")
 
         await browser.close()
 
