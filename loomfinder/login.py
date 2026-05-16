@@ -51,6 +51,12 @@ async def login(email: str, password: str) -> dict:
         return cookie_dict
 
 
+def save_cookies(cookies_dict: dict):
+    COOKIE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    COOKIE_PATH.write_text(json.dumps(cookies_dict, indent=2))
+    debug(f"saved {len(cookies_dict)} cookies to {COOKIE_PATH}")
+
+
 async def load_or_login(config) -> dict:
     email = config.get("internet_archive", {}).get("email")
     password = config.get("internet_archive", {}).get("password")

@@ -1,13 +1,7 @@
 import sys
 
-import aiohttp
-
 from .login import load_or_login, track_kept_book
 from .random_selection import extract_segment
-
-LOAN_URL = "https://archive.org/services/loans/loan/"
-AVAILABILITY_URL = "https://archive.org/services/availability"
-
 
 def debug(msg):
     print(f"[debug borrow] {msg}", file=sys.stderr)
@@ -33,15 +27,6 @@ def is_borrowable(metadata, identifier=""):
     return True
 
 
-async def return_book(session, identifier):
-    url = f"{LOAN_URL}?action=return_loan&identifier={identifier}"
-    try:
-        async with session.post(url, timeout=10) as resp:
-            return resp.status == 200
-    except:
-        return False
-
-
 def _make_pages_for(metadata):
     m = _meta(metadata)
     image_count = int(m.get("imagecount", 0))
@@ -55,95 +40,83 @@ def _make_pages_for(metadata):
     return sorted(random.sample(range(20, max_page + 1), num))
 
 
-async def _capture_and_ocr(page, identifier, pages):
-    image_data = []
-    target_count = min(len(pages), 5)
-    current_page = 0
-
-    debug(f"{identifier}: advancing 25 pages past front matter")
-    for _ in range(25):
+async def _press_arrow_right(page, count, delay_ms=500):
+    for _ in range(count):
         await page.keyboard.press("ArrowRight")
-        await page.wait_for_timeout(200)
-    current_page = 25
-    await page.wait_for_timeout(1000)
+        await page.wait_for_timeout(delay_ms)
 
-    has_api = await page.evaluate("typeof br !== 'undefined' && br !== null")
-    debug(f"{identifier}: BookReader API available: {has_api}")
 
+async def _advance_batch(page, identifier, label, count, per_press_ms=500, drain_ms=2000):
+    debug(f"{identifier}: {label} {count} presses at {per_press_ms}ms")
+    await _press_arrow_right(page, count, per_press_ms)
+    await page.wait_for_timeout(drain_ms)
+
+
+async def _try_capture(page, identifier, image_sizes):
     CAPTURE_SELECTORS = [
         "img.BRpageimage", "img.br-page-image", "canvas.BRpage",
         "div.BRpageimage img", "#BookReader img",
     ]
-
-    async def try_capture():
-        for sel in CAPTURE_SELECTORS:
-            els = await page.query_selector_all(sel)
-            for el in els:
-                try:
-                    src = ""
-                    if sel.startswith("img") or "img" in sel:
-                        src = await el.get_attribute("src") or ""
-                        if src and not src.startswith("blob:"):
-                            continue
-                    box = await el.bounding_box()
-                    if not box or box["width"] < 120 or box["height"] < 120:
-                        continue
-                    data = await el.screenshot()
-                    if len(data) > 500:
-                        return data, sel
-                except Exception:
-                    continue
-        return None, None
-
-    for target in pages:
-        if len(image_data) >= target_count:
-            break
-
-        jumped = False
-        if has_api:
+    for sel in CAPTURE_SELECTORS:
+        els = await page.query_selector_all(sel)
+        for el in els:
             try:
-                await page.evaluate(f"br && br.jumpToPage({target})")
-                await page.wait_for_timeout(3000)
-                current_page = target
-                jumped = True
-            except Exception:
-                pass
-
-        if not jumped:
-            steps = target - current_page
-            if steps > 0:
-                for _ in range(min(steps, 50)):
-                    await page.keyboard.press("ArrowRight")
-                    await page.wait_for_timeout(150)
-                await page.wait_for_timeout(2000)
-                current_page = target
-
-        data, used_sel = await try_capture()
-        if data:
-            image_data.append(data)
-            debug(f"{identifier}: page {target} via {used_sel} ({len(data)} bytes)")
-            continue
-
-        try:
-            br = await page.query_selector("#BookReader")
-            if br:
-                data = await br.screenshot()
-                if len(data) > 500:
-                    image_data.append(data)
-                    debug(f"{identifier}: page {target} via #BookReader fallback ({len(data)} bytes)")
+                src = ""
+                if sel.startswith("img") or "img" in sel:
+                    src = await el.get_attribute("src") or ""
+                    if src and not src.startswith("blob:"):
+                        continue
+                box = await el.bounding_box()
+                if not box or box["width"] < 120 or box["height"] < 120:
                     continue
+                data = await el.screenshot()
+                if len(data) > 500:
+                    if image_sizes and len(data) == image_sizes[-1]:
+                        debug(f"{identifier}: duplicate, skipping")
+                        return None
+                    debug(f"{identifier}: captured via {sel} ({len(data)} bytes)")
+                    return data
+            except Exception:
+                continue
+    br = await page.query_selector("#BookReader")
+    if br:
+        try:
+            data = await br.screenshot()
+            if len(data) > 500:
+                if image_sizes and len(data) == image_sizes[-1]:
+                    debug(f"{identifier}: duplicate via #BookReader, skipping")
+                    return None
+                debug(f"{identifier}: captured via #BookReader ({len(data)} bytes)")
+                return data
         except Exception:
             pass
+    return None
 
-        debug(f"{identifier}: page {target}: all capture methods failed")
+
+
+async def _capture_and_ocr(page, identifier, pages):
+    CAPTURE_COUNT = 3
+
+    await _advance_batch(page, identifier, "initial advance", 12, 600, 2000)
+    await page.wait_for_timeout(3000)
+
+    image_data = []
+    image_sizes = []
+
+    for i in range(CAPTURE_COUNT):
+        data = await _try_capture(page, identifier, image_sizes)
+        if data:
+            image_data.append(data)
+            image_sizes.append(len(data))
+        if i < CAPTURE_COUNT - 1:
+            await _advance_batch(page, identifier, f"inter-capture advance {i + 1}", 6, 600, 2000)
 
     if not image_data:
         debug(f"{identifier}: no pages captured")
         return None
 
-    from .ocr import ocr_image
-
     texts = []
+    from .ocr import ocr_image
     for data in image_data:
         text = ocr_image(data)
         if text:
@@ -167,7 +140,11 @@ async def borrow_and_extract(identifier, metadata, config, tiers=None, keep=Fals
         debug(f"{identifier}: not enough pages")
         return None
 
-    debug(f"{identifier}: borrowing and extracting {len(pages)} target pages")
+    debug(f"{identifier}: borrowing and extracting")
+
+    email = config.get("internet_archive", {}).get("email")
+    password = config.get("internet_archive", {}).get("password")
+    theater_url = f"https://archive.org/details/{identifier}?view=theater"
 
     from playwright.async_api import async_playwright
 
@@ -186,73 +163,88 @@ async def borrow_and_extract(identifier, metadata, config, tiers=None, keep=Fals
 
         page = await context.new_page()
 
-        await page.goto(
-            f"https://archive.org/details/{identifier}",
-            wait_until="domcontentloaded",
-            timeout=30000,
-        )
-        await page.wait_for_timeout(3000)
-
-        borrow_btn = await page.query_selector("button:has-text('Borrow')")
-        if borrow_btn:
-            debug(f"{identifier}: clicking Borrow")
+        async def load_theater():
+            await page.goto(theater_url, wait_until="networkidle", timeout=60000)
             try:
-                await borrow_btn.click(force=True, timeout=10000)
-            except Exception as e:
-                debug(f"{identifier}: borrow click {e}, trying dispatchEvent")
-                try:
-                    await borrow_btn.dispatchEvent("click")
-                except Exception:
-                    pass
-            await page.wait_for_timeout(3000)
+                await page.wait_for_selector("#BookReader", timeout=30000)
+            except Exception:
+                debug(f"{identifier}: BookReader not found")
+                return False
+            await page.wait_for_timeout(5000)
+            return True
 
+        if not await load_theater():
+            await browser.close()
+            return None
+
+        logout_btn = await page.query_selector("button:has-text('Log In and Borrow')")
+        if logout_btn:
+            debug(f"{identifier}: session expired, re-logging in")
+            if not email or not password:
+                debug(f"{identifier}: no credentials for re-login")
+                await browser.close()
+                return None
+            try:
+                await page.goto("https://archive.org/login", wait_until="networkidle", timeout=30000)
+                await page.wait_for_timeout(2000)
+                await page.fill("#email-input", email)
+                await page.fill("#password-input", password)
+                await page.check("#remember-input")
+                await page.keyboard.press("Enter")
+                await page.wait_for_url("https://archive.org/", timeout=20000)
+                debug(f"{identifier}: re-login successful")
+                from .login import save_cookies
+                fresh_cookies = await context.cookies()
+                save_cookies({c["name"]: c["value"] for c in fresh_cookies})
+            except Exception as e:
+                debug(f"{identifier}: re-login failed: {e}")
+                await browser.close()
+                return None
+            if not await load_theater():
+                await browser.close()
+                return None
+
+        borrow_btn = await page.query_selector("button:has-text('borrow')")
+        if borrow_btn:
+            debug(f"{identifier}: clicking Borrow in BookReader toolbar")
+            try:
+                await borrow_btn.click(timeout=10000)
+                await page.wait_for_timeout(5000)
+            except Exception as e:
+                debug(f"{identifier}: borrow click failed: {e}")
             body_text = await page.text_content("body") or ""
             if "lending limit" in body_text.lower() or "lending error" in body_text.lower():
                 debug(f"{identifier}: borrowing limit reached")
                 await browser.close()
                 return "__LENDING_LIMIT__"
-
-            debug(f"{identifier}: borrow step done")
+            debug(f"{identifier}: borrow click done")
         else:
-            debug(f"{identifier}: no borrow button, may be open access")
+            debug(f"{identifier}: no borrow button found, may be open access or already borrowed")
 
-        await page.goto(
-            f"https://archive.org/details/{identifier}?view=theater",
-            wait_until="networkidle",
-            timeout=60000,
-        )
-
-        try:
-            await page.wait_for_selector("#BookReader", timeout=30000)
-        except Exception:
-            debug(f"{identifier}: BookReader not found")
-            await browser.close()
-            return None
-
-        await page.wait_for_timeout(5000)
-
-        is_preview = await page.evaluate("""(() => {
+        preview = await page.evaluate("""(() => {
             try { return typeof br !== 'undefined' && br !== null && br.brPreview === true; }
-            catch(e) { return false; }
+            catch(e) { return null; }
         })()""")
-        if is_preview:
-            debug(f"{identifier}: BookReader is in preview mode — borrow failed")
-            await browser.close()
-            return None
+        debug(f"{identifier}: BookReader preview mode: {preview}")
 
         result = await _capture_and_ocr(page, identifier, pages)
+
+        if result and not keep:
+            try:
+                return_btn = await page.query_selector("button:has-text('Return')")
+                if return_btn:
+                    await return_btn.click(timeout=10000)
+                    await page.wait_for_timeout(2000)
+                    debug(f"{identifier}: returned book")
+            except Exception as e:
+                debug(f"{identifier}: return click failed: {e}")
+
         await browser.close()
 
     if result and keep:
         m = _meta(metadata)
         title_str = m.get("title", identifier)
         track_kept_book(identifier, title_str)
-    elif result and not keep:
-        try:
-            async with aiohttp.ClientSession() as session:
-                await return_book(session, identifier)
-        except Exception:
-            pass
 
     return result
 
